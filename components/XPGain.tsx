@@ -112,6 +112,13 @@ export default function XPGain({ visible, xpCalc, onClose }: XPGainProps) {
                 <Text style={[styles.breakdownValue, styles.bonus]}>+{xpCalc.streakBonus}</Text>
               </View>
             )}
+
+            {xpCalc.dailyGoalBonus && xpCalc.dailyGoalBonus > 0 && (
+              <View style={styles.breakdownItem}>
+                <Text style={styles.breakdownLabel}>Daily Goal Bonus 🎯</Text>
+                <Text style={[styles.breakdownValue, styles.highlight]}>+{xpCalc.dailyGoalBonus}</Text>
+              </View>
+            )}
           </View>
         </Animated.View>
       </View>

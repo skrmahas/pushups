@@ -2,12 +2,14 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useFonts } from 'expo-font';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { View } from 'react-native';
+import { View, Platform } from 'react-native';
+import * as NavigationBar from 'expo-navigation-bar';
 
 import { supabase } from '@/lib/supabase';
 import { useStore } from '@/lib/store';
+import { hasCompletedOnboarding } from '@/lib/workout-plan';
 import Colors from '@/constants/Colors';
 
 export {
@@ -28,6 +30,15 @@ export default function RootLayout() {
     SpaceMono: require('../assets/fonts/SpaceMono-Regular.ttf'),
     ...FontAwesome.font,
   });
+
+  // Hide Android navigation bar
+  useEffect(() => {
+    if (Platform.OS === 'android') {
+      NavigationBar.setVisibilityAsync('hidden');
+      NavigationBar.setBehaviorAsync('overlay-swipe');
+      NavigationBar.setBackgroundColorAsync('transparent');
+    }
+  }, []);
 
   // Expo Router uses Error Boundaries to catch errors in the navigation tree.
   useEffect(() => {
@@ -52,6 +63,8 @@ function RootLayoutNav() {
   const segments = useSegments();
   const session = useStore((state) => state.session);
   const setSession = useStore((state) => state.setSession);
+  const [onboardingChecked, setOnboardingChecked] = useState(false);
+  const [needsOnboarding, setNeedsOnboarding] = useState(false);
 
   useEffect(() => {
     // Listen for auth state changes
@@ -67,17 +80,42 @@ function RootLayoutNav() {
     return () => subscription.unsubscribe();
   }, []);
 
+  // Check onboarding status when session changes
   useEffect(() => {
+    const checkOnboarding = async () => {
+      if (session?.user?.id) {
+        const completed = await hasCompletedOnboarding(session.user.id);
+        setNeedsOnboarding(!completed);
+        setOnboardingChecked(true);
+      } else {
+        setOnboardingChecked(true);
+        setNeedsOnboarding(false);
+      }
+    };
+    checkOnboarding();
+  }, [session?.user?.id]);
+
+  useEffect(() => {
+    if (!onboardingChecked) return;
+
     const inAuthGroup = segments[0] === '(auth)';
+    const inOnboardingGroup = segments[0] === '(onboarding)';
 
     if (!session && !inAuthGroup) {
       // Redirect to login if not authenticated
       router.replace('/(auth)/login');
     } else if (session && inAuthGroup) {
-      // Redirect to main app if authenticated
-      router.replace('/(tabs)/workout');
+      // Check if user needs onboarding
+      if (needsOnboarding) {
+        router.replace('/(onboarding)/welcome');
+      } else {
+        router.replace('/(tabs)/workout');
+      }
+    } else if (session && needsOnboarding && !inOnboardingGroup && !inAuthGroup) {
+      // User is authenticated but hasn't completed onboarding
+      router.replace('/(onboarding)/welcome');
     }
-  }, [session, segments]);
+  }, [session, segments, onboardingChecked, needsOnboarding]);
 
   return (
     <View style={{ flex: 1, backgroundColor: Colors.dark.background }}>
@@ -97,8 +135,10 @@ function RootLayoutNav() {
         }}
       >
         <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+        <Stack.Screen name="(onboarding)" options={{ headerShown: false }} />
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Workout Details' }} />
+        <Stack.Screen name="workout-detail/[id]" options={{ presentation: 'card', title: 'Workout' }} />
       </Stack>
     </View>
   );

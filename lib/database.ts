@@ -2,13 +2,18 @@ import { ensureProfileExists, getProfile } from './friends';
 import { calculateXP, Difficulty, getLevelFromXP } from './gamification';
 import { SetData } from './store';
 import { Profile, Reward, supabase, UserReward, Workout, WorkoutSet } from './supabase';
+import { ExerciseType } from './exercises';
 
 export async function saveWorkout(
   userId: string,
   sets: SetData[],
   workoutStartTime: number,
   difficulty: Difficulty = 'normal',
-  variation: string = 'standard'
+  variation: string = 'standard',
+  exerciseType: ExerciseType = 'pushups',
+  isDailyGoalCompleted: boolean = false,
+  dailyGoalBonusXP: number = 0,
+  planDay?: number
 ): Promise<Workout | null> {
   // Ensure profile exists first
   let profile = await getProfile(userId);
@@ -19,33 +24,39 @@ export async function saveWorkout(
   const currentStreak = profile?.current_streak || 0;
   const currentXP = profile?.xp || 0;
 
-  const totalPushups = sets.reduce((sum, set) => sum + set.pushups, 0);
+  const totalReps = sets.reduce((sum, set) => sum + set.pushups, 0);
   const activeTimeSeconds = sets.reduce((sum, set) => sum + set.durationSeconds, 0);
   const restTimeSeconds = sets.reduce((sum, set) => sum + set.restAfterSeconds, 0);
   const totalTimeSeconds = Math.round((Date.now() - workoutStartTime) / 1000);
-  const pushupsPerMinute = activeTimeSeconds > 0 
-    ? (totalPushups / activeTimeSeconds) * 60 
+  const repsPerMinute = activeTimeSeconds > 0 
+    ? (totalReps / activeTimeSeconds) * 60 
     : 0;
 
   // Calculate XP earned (with variation multiplier)
-  const xpCalc = calculateXP(totalPushups, pushupsPerMinute, difficulty, currentStreak, variation);
+  const xpCalc = calculateXP(totalReps, repsPerMinute, difficulty, currentStreak, variation);
+  const totalXPEarned = xpCalc.totalXP + dailyGoalBonusXP;
 
   // Insert workout
   console.log('Attempting to save workout for user:', userId);
-  console.log('Workout data:', { totalPushups, difficulty, variation, xp: xpCalc.totalXP });
+  console.log('Workout data:', { totalReps, difficulty, variation, exerciseType, xp: totalXPEarned, dailyGoal: isDailyGoalCompleted });
   
   const { data: workout, error: workoutError } = await supabase
     .from('workouts')
     .insert({
       user_id: userId,
-      total_pushups: totalPushups,
+      total_pushups: totalReps,
       total_time_seconds: totalTimeSeconds,
       active_time_seconds: activeTimeSeconds,
       rest_time_seconds: restTimeSeconds,
-      pushups_per_minute: Math.round(pushupsPerMinute * 10) / 10,
+      pushups_per_minute: Math.round(repsPerMinute * 10) / 10,
       difficulty,
       variation,
-      xp_earned: xpCalc.totalXP,
+      xp_earned: totalXPEarned,
+      exercise_type: exerciseType,
+      is_daily_goal_completed: isDailyGoalCompleted,
+      daily_goal_bonus_xp: dailyGoalBonusXP,
+      plan_day: planDay || null,
+      privacy: 'friends',
     })
     .select()
     .single();
@@ -78,7 +89,7 @@ export async function saveWorkout(
   }
 
   // Manually update profile stats (in case trigger doesn't work)
-  const newXP = currentXP + xpCalc.totalXP;
+  const newXP = currentXP + totalXPEarned;
   const newLevel = getLevelFromXP(newXP);
   
   // Calculate new streak

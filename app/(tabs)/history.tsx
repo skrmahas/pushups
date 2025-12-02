@@ -5,22 +5,22 @@ import {
   Text,
   FlatList,
   TouchableOpacity,
-  RefreshControl,
   ActivityIndicator,
-  Animated,
+  RefreshControl,
 } from 'react-native';
-import { Ionicons, FontAwesome5 } from '@expo/vector-icons';
+import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 
 import { useStore } from '@/lib/store';
 import { getWorkouts, getWorkoutSets } from '@/lib/database';
 import { Workout, WorkoutSet } from '@/lib/supabase';
+import { EXERCISES, ExerciseType } from '@/lib/exercises';
 import Colors from '@/constants/Colors';
 
-const formatTime = (seconds: number): string => {
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
-  return `${mins}m ${secs}s`;
-};
+interface WorkoutWithSets extends Workout {
+  sets?: WorkoutSet[];
+  expanded?: boolean;
+}
 
 const formatDate = (dateString: string): string => {
   const date = new Date(dateString);
@@ -32,16 +32,21 @@ const formatDate = (dateString: string): string => {
     return 'Today';
   } else if (date.toDateString() === yesterday.toDateString()) {
     return 'Yesterday';
-  } else {
-    return date.toLocaleDateString('en-US', {
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-    });
   }
+  return date.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
 };
 
-const formatFullDate = (dateString: string): string => {
+const formatTime = (seconds: number): string => {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}m ${secs}s`;
+};
+
+const formatFullTime = (dateString: string): string => {
   const date = new Date(dateString);
   return date.toLocaleTimeString('en-US', {
     hour: 'numeric',
@@ -50,153 +55,28 @@ const formatFullDate = (dateString: string): string => {
   });
 };
 
-interface WorkoutItemProps {
-  workout: Workout;
-  isExpanded: boolean;
-  onToggle: () => void;
-  sets: WorkoutSet[];
-  loadingSets: boolean;
-}
-
-function WorkoutItem({ workout, isExpanded, onToggle, sets, loadingSets }: WorkoutItemProps) {
-  const rotateAnim = React.useRef(new Animated.Value(0)).current;
-
-  React.useEffect(() => {
-    Animated.timing(rotateAnim, {
-      toValue: isExpanded ? 1 : 0,
-      duration: 200,
-      useNativeDriver: true,
-    }).start();
-  }, [isExpanded]);
-
-  const rotation = rotateAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['0deg', '180deg'],
-  });
-
-  const reachedGoal = workout.total_pushups >= 100;
-
-  return (
-    <View style={styles.workoutCard}>
-      <TouchableOpacity
-        style={styles.workoutHeader}
-        onPress={onToggle}
-        activeOpacity={0.7}
-      >
-        <View style={styles.workoutHeaderLeft}>
-          <View style={[styles.workoutIcon, reachedGoal && styles.workoutIconSuccess]}>
-            {reachedGoal ? (
-              <Ionicons name="trophy" size={20} color={Colors.dark.warning} />
-            ) : (
-              <FontAwesome5 name="dumbbell" size={16} color={Colors.dark.accent} />
-            )}
-          </View>
-          <View>
-            <Text style={styles.workoutDate}>{formatDate(workout.created_at)}</Text>
-            <Text style={styles.workoutTime}>{formatFullDate(workout.created_at)}</Text>
-          </View>
-        </View>
-        
-        <View style={styles.workoutHeaderRight}>
-          <View style={styles.workoutPushups}>
-            <Text style={[styles.workoutPushupsNumber, reachedGoal && styles.goalReached]}>
-              {workout.total_pushups}
-            </Text>
-            <Text style={styles.workoutPushupsLabel}>pushups</Text>
-          </View>
-          <Animated.View style={{ transform: [{ rotate: rotation }] }}>
-            <Ionicons name="chevron-down" size={24} color={Colors.dark.textMuted} />
-          </Animated.View>
-        </View>
-      </TouchableOpacity>
-
-      {isExpanded && (
-        <View style={styles.workoutDetails}>
-          {/* Stats row */}
-          <View style={styles.statsRow}>
-            <View style={styles.statBox}>
-              <Text style={styles.statBoxValue}>{formatTime(workout.total_time_seconds)}</Text>
-              <Text style={styles.statBoxLabel}>Total Time</Text>
-            </View>
-            <View style={styles.statBox}>
-              <Text style={styles.statBoxValue}>{formatTime(workout.active_time_seconds)}</Text>
-              <Text style={styles.statBoxLabel}>Active Time</Text>
-            </View>
-            <View style={styles.statBox}>
-              <Text style={styles.statBoxValue}>{workout.pushups_per_minute.toFixed(1)}</Text>
-              <Text style={styles.statBoxLabel}>Pushups/min</Text>
-            </View>
-          </View>
-
-          {/* Rest stats */}
-          <View style={styles.restStats}>
-            <View style={styles.restStatItem}>
-              <Ionicons name="pause-circle-outline" size={18} color={Colors.dark.textMuted} />
-              <Text style={styles.restStatText}>
-                Rest Time: {formatTime(workout.rest_time_seconds)}
-              </Text>
-            </View>
-          </View>
-
-          {/* Sets breakdown */}
-          <View style={styles.setsContainer}>
-            <Text style={styles.setsTitle}>SETS BREAKDOWN</Text>
-            {loadingSets ? (
-              <ActivityIndicator color={Colors.dark.accent} style={{ marginVertical: 16 }} />
-            ) : sets.length > 0 ? (
-              sets.map((set, index) => (
-                <View key={set.id} style={styles.setRow}>
-                  <View style={styles.setRowLeft}>
-                    <View style={styles.setNumberBadge}>
-                      <Text style={styles.setNumberText}>{set.set_number}</Text>
-                    </View>
-                    <Text style={styles.setReps}>{set.pushups} reps</Text>
-                  </View>
-                  <View style={styles.setRowRight}>
-                    <Text style={styles.setDuration}>{formatTime(set.duration_seconds)}</Text>
-                    {set.rest_after_seconds > 0 && (
-                      <Text style={styles.setRest}>+{set.rest_after_seconds}s rest</Text>
-                    )}
-                  </View>
-                </View>
-              ))
-            ) : (
-              <Text style={styles.noSetsText}>No set details available</Text>
-            )}
-          </View>
-        </View>
-      )}
-    </View>
-  );
-}
-
 export default function HistoryScreen() {
+  const router = useRouter();
   const session = useStore((state) => state.session);
-  const [workouts, setWorkouts] = useState<Workout[]>([]);
+  const [workouts, setWorkouts] = useState<WorkoutWithSets[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [workoutSets, setWorkoutSets] = useState<Record<string, WorkoutSet[]>>({});
-  const [loadingSets, setLoadingSets] = useState<string | null>(null);
 
   const fetchWorkouts = useCallback(async () => {
     if (!session?.user?.id) return;
-    
+
     try {
       const data = await getWorkouts(session.user.id);
-      setWorkouts(data);
+      setWorkouts(data.map((w) => ({ ...w, expanded: false })));
     } catch (error) {
       console.error('Error fetching workouts:', error);
+    } finally {
+      setLoading(false);
     }
   }, [session?.user?.id]);
 
   useEffect(() => {
-    const loadData = async () => {
-      setLoading(true);
-      await fetchWorkouts();
-      setLoading(false);
-    };
-    loadData();
+    fetchWorkouts();
   }, [fetchWorkouts]);
 
   const onRefresh = useCallback(async () => {
@@ -205,23 +85,124 @@ export default function HistoryScreen() {
     setRefreshing(false);
   }, [fetchWorkouts]);
 
-  const handleToggleExpand = async (workoutId: string) => {
-    if (expandedId === workoutId) {
-      setExpandedId(null);
-    } else {
-      setExpandedId(workoutId);
-      
-      if (!workoutSets[workoutId]) {
-        setLoadingSets(workoutId);
-        try {
-          const sets = await getWorkoutSets(workoutId);
-          setWorkoutSets((prev) => ({ ...prev, [workoutId]: sets }));
-        } catch (error) {
-          console.error('Error fetching sets:', error);
-        }
-        setLoadingSets(null);
-      }
+  const toggleExpand = async (workoutId: string) => {
+    const workoutIndex = workouts.findIndex((w) => w.id === workoutId);
+    if (workoutIndex === -1) return;
+
+    const workout = workouts[workoutIndex];
+
+    // Load sets if not already loaded
+    if (!workout.sets) {
+      const sets = await getWorkoutSets(workoutId);
+      workout.sets = sets;
     }
+
+    const newWorkouts = [...workouts];
+    newWorkouts[workoutIndex] = { ...workout, expanded: !workout.expanded };
+    setWorkouts(newWorkouts);
+  };
+
+  const renderWorkoutItem = ({ item }: { item: WorkoutWithSets }) => {
+    const exerciseType = (item.exercise_type || 'pushups') as ExerciseType;
+    const exercise = EXERCISES[exerciseType];
+    const reachedDailyGoal = item.is_daily_goal_completed;
+
+    return (
+      <TouchableOpacity
+        style={styles.workoutCard}
+        onPress={() => toggleExpand(item.id)}
+        activeOpacity={0.8}
+      >
+        {/* Header */}
+        <View style={styles.workoutHeader}>
+          <View style={styles.dateContainer}>
+            <Text style={styles.dateText}>{formatDate(item.created_at)}</Text>
+            <Text style={styles.timeText}>{formatFullTime(item.created_at)}</Text>
+          </View>
+          <View style={styles.headerRight}>
+            {reachedDailyGoal && (
+              <View style={styles.goalBadge}>
+                <Ionicons name="checkmark-circle" size={16} color={Colors.dark.success} />
+              </View>
+            )}
+            <Ionicons
+              name={item.expanded ? 'chevron-up' : 'chevron-down'}
+              size={20}
+              color={Colors.dark.textMuted}
+            />
+          </View>
+        </View>
+
+        {/* Main stats */}
+        <View style={styles.mainStats}>
+          <View style={[styles.iconContainer, { backgroundColor: exercise.accentColor + '20' }]}>
+            <Text style={styles.exerciseIcon}>{exercise.icon}</Text>
+          </View>
+          
+          <View style={styles.statColumn}>
+            <Text style={[styles.repsNumber, { color: exercise.accentColor }]}>
+              {item.total_pushups}
+            </Text>
+            <Text style={styles.repsLabel}>{exercise.namePlural}</Text>
+          </View>
+          
+          <View style={styles.secondaryStats}>
+            <View style={styles.statRow}>
+              <Ionicons name="time-outline" size={14} color={Colors.dark.textMuted} />
+              <Text style={styles.statText}>{formatTime(item.total_time_seconds)}</Text>
+            </View>
+            <View style={styles.statRow}>
+              <Ionicons name="speedometer-outline" size={14} color={Colors.dark.textMuted} />
+              <Text style={styles.statText}>{item.pushups_per_minute.toFixed(1)}/min</Text>
+            </View>
+          </View>
+        </View>
+
+        {/* XP and badges row */}
+        <View style={styles.badgesRow}>
+          <View style={styles.xpBadge}>
+            <Ionicons name="star" size={14} color={Colors.dark.warning} />
+            <Text style={styles.xpText}>+{item.xp_earned} XP</Text>
+          </View>
+          
+          {item.difficulty !== 'normal' && (
+            <View style={styles.difficultyBadge}>
+              <Text style={styles.difficultyText}>{item.difficulty}</Text>
+            </View>
+          )}
+
+          {item.daily_goal_bonus_xp && item.daily_goal_bonus_xp > 0 && (
+            <View style={styles.bonusBadge}>
+              <Text style={styles.bonusText}>+{item.daily_goal_bonus_xp} bonus</Text>
+            </View>
+          )}
+        </View>
+
+        {/* Expanded sets */}
+        {item.expanded && item.sets && (
+          <View style={styles.setsContainer}>
+            <View style={styles.setsDivider} />
+            <Text style={styles.setsTitle}>SETS BREAKDOWN</Text>
+            {item.sets.map((set, index) => (
+              <View key={set.id} style={styles.setItem}>
+                <View style={styles.setLeft}>
+                  <View style={styles.setNumber}>
+                    <Text style={styles.setNumberText}>{set.set_number}</Text>
+                  </View>
+                  <View>
+                    <Text style={styles.setReps}>{set.pushups} reps</Text>
+                    <Text style={styles.setDuration}>{formatTime(set.duration_seconds)}</Text>
+                  </View>
+                </View>
+                {set.rest_after_seconds > 0 && (
+                  <Text style={styles.restTime}>Rest: {formatTime(set.rest_after_seconds)}</Text>
+                )}
+              </View>
+            ))}
+          </View>
+        )}
+      </TouchableOpacity>
+    );
   };
 
   if (loading) {
@@ -236,11 +217,11 @@ export default function HistoryScreen() {
     return (
       <View style={styles.emptyContainer}>
         <View style={styles.emptyIcon}>
-          <Ionicons name="fitness-outline" size={64} color={Colors.dark.textMuted} />
+          <Ionicons name="calendar-outline" size={64} color={Colors.dark.textMuted} />
         </View>
         <Text style={styles.emptyTitle}>No Workouts Yet</Text>
         <Text style={styles.emptyText}>
-          Complete your first workout to see{'\n'}your history here
+          Complete your first workout to see it here
         </Text>
       </View>
     );
@@ -250,17 +231,10 @@ export default function HistoryScreen() {
     <View style={styles.container}>
       <FlatList
         data={workouts}
+        renderItem={renderWorkoutItem}
         keyExtractor={(item) => item.id}
-        renderItem={({ item }) => (
-          <WorkoutItem
-            workout={item}
-            isExpanded={expandedId === item.id}
-            onToggle={() => handleToggleExpand(item.id)}
-            sets={workoutSets[item.id] || []}
-            loadingSets={loadingSets === item.id}
-          />
-        )}
         contentContainerStyle={styles.listContent}
+        showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -269,7 +243,6 @@ export default function HistoryScreen() {
             colors={[Colors.dark.accent]}
           />
         }
-        showsVerticalScrollIndicator={false}
       />
     </View>
   );
@@ -279,6 +252,10 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: Colors.dark.background,
+  },
+  listContent: {
+    padding: 16,
+    paddingBottom: 40,
   },
   loadingContainer: {
     flex: 1,
@@ -314,122 +291,142 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 24,
   },
-  listContent: {
-    padding: 16,
-  },
   workoutCard: {
     backgroundColor: Colors.dark.surface,
     borderRadius: 16,
+    padding: 16,
     marginBottom: 12,
-    overflow: 'hidden',
   },
   workoutHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 16,
+    marginBottom: 16,
   },
-  workoutHeaderLeft: {
+  dateContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 8,
   },
-  workoutIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: Colors.dark.surfaceLight,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  workoutIconSuccess: {
-    backgroundColor: 'rgba(251, 191, 36, 0.15)',
-  },
-  workoutDate: {
-    fontSize: 16,
+  dateText: {
+    fontSize: 14,
     fontWeight: '600',
     color: Colors.dark.text,
   },
-  workoutTime: {
+  timeText: {
     fontSize: 13,
     color: Colors.dark.textMuted,
-    marginTop: 2,
   },
-  workoutHeaderRight: {
+  headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    gap: 8,
   },
-  workoutPushups: {
-    alignItems: 'flex-end',
+  goalBadge: {
+    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    padding: 4,
+    borderRadius: 8,
   },
-  workoutPushupsNumber: {
+  mainStats: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  iconContainer: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 16,
+  },
+  exerciseIcon: {
     fontSize: 24,
-    fontWeight: '700',
-    color: Colors.dark.accent,
   },
-  goalReached: {
-    color: Colors.dark.warning,
-  },
-  workoutPushupsLabel: {
-    fontSize: 11,
-    color: Colors.dark.textMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  workoutDetails: {
-    borderTopWidth: 1,
-    borderTopColor: Colors.dark.border,
-    padding: 16,
-  },
-  statsRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 16,
-  },
-  statBox: {
+  statColumn: {
     flex: 1,
-    backgroundColor: Colors.dark.surfaceLight,
-    borderRadius: 12,
-    padding: 12,
-    alignItems: 'center',
   },
-  statBoxValue: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: Colors.dark.text,
+  repsNumber: {
+    fontSize: 32,
+    fontWeight: '800',
   },
-  statBoxLabel: {
-    fontSize: 10,
+  repsLabel: {
+    fontSize: 12,
     color: Colors.dark.textMuted,
-    marginTop: 4,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
-  restStats: {
-    marginBottom: 16,
+  secondaryStats: {
+    alignItems: 'flex-end',
+    gap: 4,
   },
-  restStatItem: {
+  statRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 4,
   },
-  restStatText: {
-    fontSize: 14,
+  statText: {
+    fontSize: 13,
     color: Colors.dark.textSecondary,
   },
-  setsContainer: {
-    backgroundColor: Colors.dark.surfaceLight,
+  badgesRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  xpBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(251, 191, 36, 0.15)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
     borderRadius: 12,
-    padding: 12,
+    gap: 4,
+  },
+  xpText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.dark.warning,
+  },
+  difficultyBadge: {
+    backgroundColor: Colors.dark.surfaceLight,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  difficultyText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.dark.textSecondary,
+    textTransform: 'capitalize',
+  },
+  bonusBadge: {
+    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  bonusText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.dark.success,
+  },
+  setsContainer: {
+    marginTop: 16,
+  },
+  setsDivider: {
+    height: 1,
+    backgroundColor: Colors.dark.border,
+    marginBottom: 16,
   },
   setsTitle: {
     fontSize: 11,
+    fontWeight: '600',
     color: Colors.dark.textMuted,
     letterSpacing: 1,
     marginBottom: 12,
   },
-  setRow: {
+  setItem: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
@@ -437,46 +434,35 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: Colors.dark.border,
   },
-  setRowLeft: {
+  setLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
   },
-  setNumberBadge: {
+  setNumber: {
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: Colors.dark.surface,
+    backgroundColor: Colors.dark.surfaceLight,
     justifyContent: 'center',
     alignItems: 'center',
   },
   setNumberText: {
     fontSize: 12,
     fontWeight: '700',
-    color: Colors.dark.accent,
+    color: Colors.dark.textSecondary,
   },
   setReps: {
     fontSize: 14,
     fontWeight: '600',
     color: Colors.dark.text,
   },
-  setRowRight: {
-    alignItems: 'flex-end',
-  },
   setDuration: {
-    fontSize: 14,
-    color: Colors.dark.textSecondary,
-  },
-  setRest: {
     fontSize: 12,
     color: Colors.dark.textMuted,
-    marginTop: 2,
   },
-  noSetsText: {
-    fontSize: 14,
+  restTime: {
+    fontSize: 12,
     color: Colors.dark.textMuted,
-    textAlign: 'center',
-    paddingVertical: 16,
   },
 });
-

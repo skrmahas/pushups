@@ -29,6 +29,10 @@ export interface Profile {
   longest_streak: number;
   last_workout_date: string | null;
   push_token: string | null;
+  exercise_type: string | null;
+  current_plan_id: string | null;
+  onboarding_completed: boolean;
+  current_plan_day: number;
   created_at: string;
   updated_at: string;
 }
@@ -45,6 +49,11 @@ export interface Workout {
   difficulty: 'easy' | 'normal' | 'hard' | 'extreme';
   variation: string;
   xp_earned: number;
+  exercise_type: string;
+  plan_day: number | null;
+  is_daily_goal_completed: boolean;
+  privacy: string;
+  daily_goal_bonus_xp: number;
   created_at: string;
 }
 

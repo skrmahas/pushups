@@ -27,6 +27,7 @@ export interface XPCalculation {
   variationMultiplier: number;
   combinedMultiplier: number;
   streakBonus: number;
+  dailyGoalBonus?: number;
   totalXP: number;
 }
 

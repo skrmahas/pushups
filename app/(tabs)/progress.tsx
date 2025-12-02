@@ -14,6 +14,8 @@ import { Ionicons, FontAwesome5 } from '@expo/vector-icons';
 import { useStore } from '@/lib/store';
 import { getWorkouts, getWorkoutStats, getWorkoutSets } from '@/lib/database';
 import { Workout } from '@/lib/supabase';
+import { getPlanProgress, getTodaysPlan } from '@/lib/workout-plan';
+import { EXERCISES, ExerciseType } from '@/lib/exercises';
 import Colors from '@/constants/Colors';
 
 const screenWidth = Dimensions.get('window').width;
@@ -25,6 +27,15 @@ interface Stats {
   averageRestTime: number;
   currentStreak: number;
   maxPushupsInOneSet: number;
+}
+
+interface PlanProgressData {
+  currentDay: number;
+  totalDays: number;
+  percentComplete: number;
+  workoutsCompleted: number;
+  daysRemaining: number;
+  isOnTrack: boolean;
 }
 
 const chartConfig = {
@@ -88,42 +99,106 @@ function StatCard({
   );
 }
 
-function GoalProgress({ maxInOneSet }: { maxInOneSet: number }) {
-  const progress = Math.min((maxInOneSet / 100) * 100, 100);
-  const isComplete = maxInOneSet >= 100;
+function PlanProgressCard({ progress, exerciseType }: { progress: PlanProgressData; exerciseType: ExerciseType }) {
+  const exercise = EXERCISES[exerciseType];
 
   return (
-    <View style={styles.goalContainer}>
-      <View style={styles.goalHeader}>
-        <View style={styles.goalTitleContainer}>
-          {isComplete ? (
-            <Ionicons name="trophy" size={24} color={Colors.dark.warning} />
-          ) : (
-            <Ionicons name="flag" size={24} color={Colors.dark.accent} />
-          )}
-          <Text style={styles.goalTitle}>
-            {isComplete ? 'GOAL ACHIEVED!' : 'ULTIMATE GOAL'}
-          </Text>
+    <View style={styles.planProgressContainer}>
+      <View style={styles.planProgressHeader}>
+        <View style={styles.planTitleContainer}>
+          <Text style={styles.exerciseIcon}>{exercise.icon}</Text>
+          <View>
+            <Text style={styles.planTitle}>YOUR JOURNEY</Text>
+            <Text style={styles.planSubtitle}>
+              Day {progress.currentDay} of {progress.totalDays}
+            </Text>
+          </View>
         </View>
-        <Text style={styles.goalProgress}>{maxInOneSet} / 100</Text>
+        {progress.isOnTrack ? (
+          <View style={styles.onTrackBadge}>
+            <Ionicons name="checkmark-circle" size={16} color={Colors.dark.success} />
+            <Text style={styles.onTrackText}>On Track</Text>
+          </View>
+        ) : (
+          <View style={styles.behindBadge}>
+            <Ionicons name="alert-circle" size={16} color={Colors.dark.warning} />
+            <Text style={styles.behindText}>Catch Up!</Text>
+          </View>
+        )}
       </View>
 
-      <View style={styles.goalBarContainer}>
-        <View style={styles.goalBar}>
+      <View style={styles.progressBarContainer}>
+        <View style={styles.progressBar}>
           <View
             style={[
-              styles.goalBarFill,
+              styles.progressBarFill,
+              { width: `${progress.percentComplete}%`, backgroundColor: exercise.accentColor },
+            ]}
+          />
+        </View>
+        <Text style={styles.progressPercent}>{progress.percentComplete}%</Text>
+      </View>
+
+      <View style={styles.planStatsRow}>
+        <View style={styles.planStatItem}>
+          <Text style={styles.planStatValue}>{progress.workoutsCompleted}</Text>
+          <Text style={styles.planStatLabel}>Workouts</Text>
+        </View>
+        <View style={styles.planStatDivider} />
+        <View style={styles.planStatItem}>
+          <Text style={styles.planStatValue}>{progress.daysRemaining}</Text>
+          <Text style={styles.planStatLabel}>Days Left</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function DailyGoalProgress({ 
+  todaysGoal, 
+  completedToday, 
+  exerciseType 
+}: { 
+  todaysGoal: number; 
+  completedToday: number;
+  exerciseType: ExerciseType;
+}) {
+  const exercise = EXERCISES[exerciseType];
+  const progress = Math.min((completedToday / todaysGoal) * 100, 100);
+  const isComplete = completedToday >= todaysGoal;
+
+  return (
+    <View style={styles.dailyGoalContainer}>
+      <View style={styles.dailyGoalHeader}>
+        <View style={styles.dailyGoalTitleContainer}>
+          {isComplete ? (
+            <Ionicons name="checkmark-circle" size={24} color={Colors.dark.success} />
+          ) : (
+            <Ionicons name="flag" size={24} color={exercise.accentColor} />
+          )}
+          <Text style={styles.dailyGoalTitle}>
+            {isComplete ? "TODAY'S GOAL COMPLETE!" : "TODAY'S GOAL"}
+          </Text>
+        </View>
+        <Text style={styles.dailyGoalProgress}>{completedToday} / {todaysGoal}</Text>
+      </View>
+
+      <View style={styles.dailyGoalBarContainer}>
+        <View style={styles.dailyGoalBar}>
+          <View
+            style={[
+              styles.dailyGoalBarFill,
               { width: `${progress}%` },
-              isComplete && styles.goalBarComplete,
+              isComplete && styles.dailyGoalBarComplete,
             ]}
           />
         </View>
       </View>
 
-      <Text style={styles.goalDescription}>
+      <Text style={styles.dailyGoalDescription}>
         {isComplete
-          ? 'Congratulations! You can do 100 pushups in one go!'
-          : `${100 - maxInOneSet} more pushups in a single set to reach your goal`}
+          ? `Great job! You've completed your daily ${exercise.namePlural.toLowerCase()} goal! +Bonus XP earned!`
+          : `${todaysGoal - completedToday} more ${exercise.namePlural.toLowerCase()} to reach today's goal`}
       </Text>
     </View>
   );
@@ -135,17 +210,43 @@ export default function ProgressScreen() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [planProgress, setPlanProgress] = useState<PlanProgressData | null>(null);
+  const [exerciseType, setExerciseType] = useState<ExerciseType>('pushups');
+  const [todaysGoal, setTodaysGoal] = useState(100);
+  const [completedToday, setCompletedToday] = useState(0);
 
   const fetchData = useCallback(async () => {
     if (!session?.user?.id) return;
 
     try {
-      const [workoutsData, statsData] = await Promise.all([
+      const [workoutsData, statsData, progressData, todayData] = await Promise.all([
         getWorkouts(session.user.id),
         getWorkoutStats(session.user.id),
+        getPlanProgress(session.user.id),
+        getTodaysPlan(session.user.id),
       ]);
+      
       setWorkouts(workoutsData);
       setStats(statsData);
+      setPlanProgress(progressData);
+
+      if (todayData.planDay) {
+        setTodaysGoal(todayData.planDay.target_total_reps || 100);
+      }
+      if (todayData.plan) {
+        setExerciseType(todayData.plan.exercise_type as ExerciseType);
+      }
+
+      // Calculate reps completed today
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const todaysWorkouts = workoutsData.filter(w => {
+        const workoutDate = new Date(w.created_at);
+        workoutDate.setHours(0, 0, 0, 0);
+        return workoutDate.getTime() === today.getTime();
+      });
+      const totalToday = todaysWorkouts.reduce((sum, w) => sum + w.total_pushups, 0);
+      setCompletedToday(totalToday);
     } catch (error) {
       console.error('Error fetching data:', error);
     }
@@ -188,6 +289,8 @@ export default function ProgressScreen() {
     );
   }
 
+  const exercise = EXERCISES[exerciseType];
+
   // Prepare chart data
   const recentWorkouts = [...workouts].reverse().slice(-7);
   const pushupsData = recentWorkouts.map((w) => w.total_pushups);
@@ -220,8 +323,17 @@ export default function ProgressScreen() {
       }
       showsVerticalScrollIndicator={false}
     >
-      {/* Goal Progress */}
-      <GoalProgress maxInOneSet={stats.maxPushupsInOneSet} />
+      {/* Plan Progress */}
+      {planProgress && (
+        <PlanProgressCard progress={planProgress} exerciseType={exerciseType} />
+      )}
+
+      {/* Daily Goal Progress */}
+      <DailyGoalProgress 
+        todaysGoal={todaysGoal} 
+        completedToday={completedToday}
+        exerciseType={exerciseType}
+      />
 
       {/* Stats Grid */}
       <View style={styles.statsGrid}>
@@ -229,8 +341,8 @@ export default function ProgressScreen() {
           icon="trophy"
           label="Best Session"
           value={stats.bestSession}
-          subtext="pushups"
-          highlight={stats.bestSession >= 100}
+          subtext={exercise.namePlural.toLowerCase()}
+          highlight={stats.bestSession >= exercise.goal}
         />
         <StatCard
           icon="flame"
@@ -250,10 +362,10 @@ export default function ProgressScreen() {
         />
       </View>
 
-      {/* Pushups Chart */}
+      {/* Reps Chart */}
       {recentWorkouts.length >= 2 && (
         <View style={styles.chartContainer}>
-          <Text style={styles.chartTitle}>PUSHUPS PER SESSION</Text>
+          <Text style={styles.chartTitle}>{exercise.namePlural.toUpperCase()} PER SESSION</Text>
           <LineChart
             data={{
               labels: labels,
@@ -261,7 +373,10 @@ export default function ProgressScreen() {
             }}
             width={screenWidth - 48}
             height={200}
-            chartConfig={chartConfig}
+            chartConfig={{
+              ...chartConfig,
+              color: (opacity = 1) => `rgba(${exercise.id === 'pullups' ? '139, 92, 246' : '255, 107, 53'}, ${opacity})`,
+            }}
             bezier
             style={styles.chart}
             withInnerLines={true}
@@ -273,10 +388,10 @@ export default function ProgressScreen() {
         </View>
       )}
 
-      {/* Pushups per Minute Chart */}
+      {/* Reps per Minute Chart */}
       {recentWorkouts.length >= 2 && (
         <View style={styles.chartContainer}>
-          <Text style={styles.chartTitle}>PUSHUPS PER MINUTE</Text>
+          <Text style={styles.chartTitle}>{exercise.namePlural.toUpperCase()} PER MINUTE</Text>
           <LineChart
             data={{
               labels: labels,
@@ -309,15 +424,15 @@ export default function ProgressScreen() {
         <Text style={styles.averageTitle}>AVERAGES</Text>
         <View style={styles.averageRow}>
           <View style={styles.averageItem}>
-            <Text style={styles.averageValue}>{stats.averagePushups}</Text>
-            <Text style={styles.averageLabel}>pushups/session</Text>
+            <Text style={[styles.averageValue, { color: exercise.accentColor }]}>{stats.averagePushups}</Text>
+            <Text style={styles.averageLabel}>{exercise.namePlural.toLowerCase()}/session</Text>
           </View>
           <View style={styles.averageDivider} />
           <View style={styles.averageItem}>
-            <Text style={styles.averageValue}>
+            <Text style={[styles.averageValue, { color: exercise.accentColor }]}>
               {(workouts.reduce((sum, w) => sum + w.pushups_per_minute, 0) / workouts.length).toFixed(1)}
             </Text>
-            <Text style={styles.averageLabel}>pushups/min</Text>
+            <Text style={styles.averageLabel}>{exercise.namePlural.toLowerCase()}/min</Text>
           </View>
         </View>
       </View>
@@ -368,52 +483,159 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 24,
   },
-  goalContainer: {
+  planProgressContainer: {
     backgroundColor: Colors.dark.surface,
     borderRadius: 20,
     padding: 20,
-    marginBottom: 20,
+    marginBottom: 16,
   },
-  goalHeader: {
+  planProgressHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
   },
-  goalTitleContainer: {
+  planTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  exerciseIcon: {
+    fontSize: 28,
+  },
+  planTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.dark.textMuted,
+    letterSpacing: 1,
+  },
+  planSubtitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: Colors.dark.text,
+    marginTop: 2,
+  },
+  onTrackBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(74, 222, 128, 0.15)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    gap: 4,
+  },
+  onTrackText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.dark.success,
+  },
+  behindBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(251, 191, 36, 0.15)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    gap: 4,
+  },
+  behindText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.dark.warning,
+  },
+  progressBarContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 16,
+  },
+  progressBar: {
+    flex: 1,
+    height: 10,
+    backgroundColor: Colors.dark.surfaceLight,
+    borderRadius: 5,
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: '100%',
+    borderRadius: 5,
+  },
+  progressPercent: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: Colors.dark.text,
+    width: 45,
+    textAlign: 'right',
+  },
+  planStatsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  planStatItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  planStatDivider: {
+    width: 1,
+    height: 32,
+    backgroundColor: Colors.dark.border,
+  },
+  planStatValue: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: Colors.dark.accent,
+  },
+  planStatLabel: {
+    fontSize: 12,
+    color: Colors.dark.textMuted,
+    marginTop: 2,
+  },
+  dailyGoalContainer: {
+    backgroundColor: Colors.dark.surface,
+    borderRadius: 20,
+    padding: 20,
+    marginBottom: 20,
+  },
+  dailyGoalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  dailyGoalTitleContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
-  goalTitle: {
+  dailyGoalTitle: {
     fontSize: 14,
     fontWeight: '700',
     color: Colors.dark.text,
     letterSpacing: 1,
   },
-  goalProgress: {
+  dailyGoalProgress: {
     fontSize: 18,
     fontWeight: '700',
     color: Colors.dark.accent,
   },
-  goalBarContainer: {
+  dailyGoalBarContainer: {
     marginBottom: 12,
   },
-  goalBar: {
+  dailyGoalBar: {
     height: 12,
     backgroundColor: Colors.dark.surfaceLight,
     borderRadius: 6,
     overflow: 'hidden',
   },
-  goalBarFill: {
+  dailyGoalBarFill: {
     height: '100%',
     backgroundColor: Colors.dark.accent,
     borderRadius: 6,
   },
-  goalBarComplete: {
-    backgroundColor: Colors.dark.warning,
+  dailyGoalBarComplete: {
+    backgroundColor: Colors.dark.success,
   },
-  goalDescription: {
+  dailyGoalDescription: {
     fontSize: 14,
     color: Colors.dark.textSecondary,
     lineHeight: 20,
@@ -509,7 +731,6 @@ const styles = StyleSheet.create({
   averageValue: {
     fontSize: 32,
     fontWeight: '800',
-    color: Colors.dark.accent,
   },
   averageLabel: {
     fontSize: 12,
@@ -522,4 +743,3 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.dark.border,
   },
 });
-

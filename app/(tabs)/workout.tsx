@@ -18,8 +18,17 @@ import XPGain from '@/components/XPGain';
 import Colors from '@/constants/Colors';
 import { saveWorkout } from '@/lib/database';
 import { getProfile } from '@/lib/friends';
-import { calculateXP, DIFFICULTIES, Difficulty, XPCalculation } from '@/lib/gamification';
+import { calculateXP, Difficulty, XPCalculation } from '@/lib/gamification';
 import { useStore } from '@/lib/store';
+import { ExerciseType, EXERCISES, getDifficultyConfig, getDefaultVariation } from '@/lib/exercises';
+import { 
+  getTodaysPlan, 
+  advancePlanDay, 
+  checkDailyGoalCompletion, 
+  calculateDailyGoalBonus,
+  DBPlanDay,
+  DBWorkoutPlan,
+} from '@/lib/workout-plan';
 
 const formatTime = (seconds: number): string => {
   const mins = Math.floor(seconds / 60);
@@ -60,23 +69,41 @@ export default function WorkoutScreen() {
   const [showDifficultyModal, setShowDifficultyModal] = useState(false);
   const [showXPGain, setShowXPGain] = useState(false);
   const [xpCalc, setXpCalc] = useState<XPCalculation | null>(null);
+  
+  // Workout plan state
+  const [exerciseType, setExerciseType] = useState<ExerciseType>('pushups');
+  const [todaysPlan, setTodaysPlan] = useState<DBPlanDay | null>(null);
+  const [workoutPlan, setWorkoutPlan] = useState<DBWorkoutPlan | null>(null);
+  const [currentPlanDay, setCurrentPlanDay] = useState(1);
 
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const buttonScaleAnim = useRef(new Animated.Value(1)).current;
 
-  // Load user profile
+  // Load user profile and workout plan
   useEffect(() => {
-    const loadProfile = async () => {
+    const loadData = async () => {
       if (session?.user?.id) {
         const profile = await getProfile(session.user.id);
         if (profile) {
           setUserLevel(profile.level);
           setUserXP(profile.xp);
           setCurrentStreak(profile.current_streak);
+          if (profile.exercise_type) {
+            setExerciseType(profile.exercise_type as ExerciseType);
+            // Set default variation for the exercise type
+            const defaultVar = getDefaultVariation(profile.exercise_type as ExerciseType);
+            setVariation(defaultVar.id);
+          }
         }
+
+        // Load today's plan
+        const { planDay, plan, dayNumber } = await getTodaysPlan(session.user.id);
+        setTodaysPlan(planDay);
+        setWorkoutPlan(plan);
+        setCurrentPlanDay(dayNumber);
       }
     };
-    loadProfile();
+    loadData();
   }, [session?.user?.id]);
 
   // Timer effects
@@ -164,7 +191,7 @@ export default function WorkoutScreen() {
 
   const handleEndSet = () => {
     if (currentPushups === 0) {
-      Alert.alert('No Pushups', 'Please add at least 1 pushup before ending the set.');
+      Alert.alert('No Reps', `Please add at least 1 ${exercise.name.toLowerCase()} before ending the set.`);
       return;
     }
     endSet(currentPushups);
@@ -196,18 +223,46 @@ export default function WorkoutScreen() {
               const { sets: finalSets, workoutStartTime: startTime } = finishWorkout();
               
               // Calculate XP for display (with variation multiplier)
-              const totalPushups = finalSets.reduce((sum, s) => sum + s.pushups, 0);
+              const totalReps = finalSets.reduce((sum, s) => sum + s.pushups, 0);
               const activeTimeSeconds = finalSets.reduce((sum, s) => sum + s.durationSeconds, 0);
               const pushupsPerMinute = activeTimeSeconds > 0 
-                ? (totalPushups / activeTimeSeconds) * 60 
+                ? (totalReps / activeTimeSeconds) * 60 
                 : 0;
               
-              const xpResult = calculateXP(totalPushups, pushupsPerMinute, difficulty, currentStreak, variation);
-              setXpCalc(xpResult);
+              // Check if daily goal was completed
+              const dailyGoalCompleted = checkDailyGoalCompletion(totalReps, todaysPlan);
+              const dailyGoalBonus = dailyGoalCompleted 
+                ? calculateDailyGoalBonus(difficulty, currentStreak, todaysPlan)
+                : 0;
+              
+              const xpResult = calculateXP(totalReps, pushupsPerMinute, difficulty, currentStreak, variation);
+              // Add daily goal bonus to the calculation
+              const finalXpCalc = {
+                ...xpResult,
+                dailyGoalBonus,
+                totalXP: xpResult.totalXP + dailyGoalBonus,
+              };
+              setXpCalc(finalXpCalc);
               
               let savedWorkout = null;
               if (session?.user?.id && startTime) {
-                savedWorkout = await saveWorkout(session.user.id, finalSets, startTime, difficulty, variation);
+                savedWorkout = await saveWorkout(
+                  session.user.id, 
+                  finalSets, 
+                  startTime, 
+                  difficulty, 
+                  variation,
+                  exerciseType,
+                  dailyGoalCompleted,
+                  dailyGoalBonus,
+                  currentPlanDay
+                );
+                
+                // Advance to next day if goal was completed
+                if (dailyGoalCompleted && session?.user?.id) {
+                  const nextDay = await advancePlanDay(session.user.id);
+                  setCurrentPlanDay(nextDay);
+                }
               }
               
               if (!savedWorkout) {
@@ -228,6 +283,12 @@ export default function WorkoutScreen() {
                     setUserXP(updatedProfile.xp);
                     setCurrentStreak(updatedProfile.current_streak);
                   }
+                  
+                  // Reload today's plan
+                  const { planDay, plan, dayNumber } = await getTodaysPlan(session.user.id);
+                  setTodaysPlan(planDay);
+                  setWorkoutPlan(plan);
+                  setCurrentPlanDay(dayNumber);
                 }
               }
               
@@ -260,14 +321,50 @@ export default function WorkoutScreen() {
     Vibration.vibrate(10);
   };
 
-  const totalPushups = sets.reduce((sum, s) => sum + s.pushups, 0) + (isInSet ? currentPushups : 0);
-  const progress = Math.min((totalPushups / 100) * 100, 100);
-  const difficultyConfig = DIFFICULTIES[difficulty];
+  const exercise = EXERCISES[exerciseType];
+  const totalReps = sets.reduce((sum, s) => sum + s.pushups, 0) + (isInSet ? currentPushups : 0);
+  const dailyGoal = todaysPlan?.targetTotalReps || exercise.goal;
+  const progress = Math.min((totalReps / dailyGoal) * 100, 100);
+  const difficultyConfig = getDifficultyConfig(exerciseType, difficulty);
 
   // Preview XP calculation (with variation multiplier)
   const activeTimeSeconds = sets.reduce((sum, s) => sum + s.durationSeconds, 0) + activeTime;
-  const previewPPM = activeTimeSeconds > 0 ? (totalPushups / activeTimeSeconds) * 60 : 0;
-  const previewXP = calculateXP(totalPushups, previewPPM, difficulty, currentStreak, variation);
+  const previewPPM = activeTimeSeconds > 0 ? (totalReps / activeTimeSeconds) * 60 : 0;
+  const previewXP = calculateXP(totalReps, previewPPM, difficulty, currentStreak, variation);
+  const previewDailyBonus = checkDailyGoalCompletion(totalReps, todaysPlan) 
+    ? calculateDailyGoalBonus(difficulty, currentStreak, todaysPlan) 
+    : 0;
+
+  // Rest day check
+  if (todaysPlan?.is_rest_day) {
+    return (
+      <View style={styles.container}>
+        <ScrollView contentContainerStyle={styles.restDayContainer}>
+          <View style={styles.restDayIcon}>
+            <Ionicons name="bed" size={64} color={Colors.dark.accent} />
+          </View>
+          <Text style={styles.restDayTitle}>Rest Day</Text>
+          <Text style={styles.restDaySubtitle}>
+            Today is a scheduled rest day.{'\n'}
+            Take it easy and let your muscles recover!
+          </Text>
+          
+          <View style={styles.restDayInfo}>
+            <Ionicons name="calendar" size={20} color={Colors.dark.textMuted} />
+            <Text style={styles.restDayInfoText}>Day {currentPlanDay} of your plan</Text>
+          </View>
+
+          <View style={styles.restDayTips}>
+            <Text style={styles.tipsTitle}>RECOVERY TIPS</Text>
+            <Text style={styles.tipItem}>• Stay hydrated</Text>
+            <Text style={styles.tipItem}>• Get enough sleep</Text>
+            <Text style={styles.tipItem}>• Light stretching is okay</Text>
+            <Text style={styles.tipItem}>• Come back stronger tomorrow!</Text>
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
 
   if (!isWorkoutActive) {
     return (
@@ -278,11 +375,35 @@ export default function WorkoutScreen() {
             <XPBar xp={userXP} size="small" />
           </View>
 
-          {/* Goal indicator */}
+          {/* Today's Goal */}
           <View style={styles.goalCard}>
-            <Text style={styles.goalLabel}>TODAY'S GOAL</Text>
-            <Text style={styles.goalNumber}>100</Text>
-            <Text style={styles.goalSubtext}>pushups</Text>
+            <View style={styles.goalHeader}>
+              <Text style={styles.goalLabel}>TODAY'S GOAL</Text>
+              {todaysPlan && (
+                <View style={styles.dayBadge}>
+                  <Text style={styles.dayBadgeText}>Day {currentPlanDay}</Text>
+                </View>
+              )}
+            </View>
+            <View style={styles.goalContent}>
+              <Text style={styles.exerciseIcon}>{exercise.icon}</Text>
+              <Text style={styles.goalNumber}>{dailyGoal}</Text>
+              <Text style={styles.goalSubtext}>{exercise.namePlural.toLowerCase()}</Text>
+            </View>
+            
+            {/* Recommended Sets */}
+            {todaysPlan?.recommended_sets && todaysPlan.recommended_sets.length > 0 && (
+              <View style={styles.recommendedSets}>
+                <Text style={styles.recommendedLabel}>RECOMMENDED SETS</Text>
+                <View style={styles.setsPreview}>
+                  {todaysPlan.recommended_sets.map((reps, index) => (
+                    <View key={index} style={styles.setPreviewBadge}>
+                      <Text style={styles.setPreviewText}>{reps}</Text>
+                    </View>
+                  ))}
+                </View>
+              </View>
+            )}
           </View>
 
           {/* Difficulty selector */}
@@ -302,7 +423,7 @@ export default function WorkoutScreen() {
             onPress={handleStartWorkout}
             activeOpacity={0.8}
           >
-            <View style={styles.startButtonInner}>
+            <View style={[styles.startButtonInner, { backgroundColor: exercise.accentColor }]}>
               <FontAwesome5 name="play" size={32} color={Colors.dark.background} />
             </View>
             <Text style={styles.startButtonText}>START WORKOUT</Text>
@@ -311,16 +432,16 @@ export default function WorkoutScreen() {
           {/* Tips */}
           <View style={styles.tipsContainer}>
             <View style={styles.tipItem}>
-              <Ionicons name="checkmark-circle" size={20} color={Colors.dark.accent} />
-              <Text style={styles.tipText}>Tap counter during pushups</Text>
+              <Ionicons name="checkmark-circle" size={20} color={exercise.accentColor} />
+              <Text style={styles.tipText}>Tap counter during {exercise.namePlural.toLowerCase()}</Text>
             </View>
             <View style={styles.tipItem}>
-              <Ionicons name="checkmark-circle" size={20} color={Colors.dark.accent} />
+              <Ionicons name="checkmark-circle" size={20} color={exercise.accentColor} />
               <Text style={styles.tipText}>Rest tracked automatically</Text>
             </View>
             <View style={styles.tipItem}>
-              <Ionicons name="checkmark-circle" size={20} color={Colors.dark.accent} />
-              <Text style={styles.tipText}>Earn XP & level up!</Text>
+              <Ionicons name="checkmark-circle" size={20} color={exercise.accentColor} />
+              <Text style={styles.tipText}>Complete daily goal for bonus XP!</Text>
             </View>
           </View>
         </ScrollView>
@@ -339,6 +460,7 @@ export default function WorkoutScreen() {
                 selectedDifficulty={difficulty}
                 selectedVariation={variation}
                 userLevel={userLevel}
+                exerciseType={exerciseType}
                 onSelectDifficulty={setDifficulty}
                 onSelectVariation={setVariation}
               />
@@ -370,15 +492,26 @@ export default function WorkoutScreen() {
       {/* XP Preview */}
       <View style={styles.xpPreview}>
         <Ionicons name="star" size={16} color={Colors.dark.warning} />
-        <Text style={styles.xpPreviewText}>+{previewXP.totalXP} XP</Text>
+        <Text style={styles.xpPreviewText}>
+          +{previewXP.totalXP + previewDailyBonus} XP
+          {previewDailyBonus > 0 && ' (includes daily bonus!)'}
+        </Text>
       </View>
 
       {/* Progress bar */}
       <View style={styles.progressContainer}>
         <View style={styles.progressBar}>
-          <View style={[styles.progressFill, { width: `${progress}%` }]} />
+          <View style={[styles.progressFill, { width: `${progress}%`, backgroundColor: exercise.accentColor }]} />
         </View>
-        <Text style={styles.progressText}>{totalPushups} / 100</Text>
+        <View style={styles.progressTextContainer}>
+          <Text style={styles.progressText}>{totalReps} / {dailyGoal}</Text>
+          {totalReps >= dailyGoal && (
+            <View style={styles.goalCompletedBadge}>
+              <Ionicons name="checkmark-circle" size={16} color={Colors.dark.success} />
+              <Text style={styles.goalCompletedText}>Daily Goal Complete!</Text>
+            </View>
+          )}
+        </View>
       </View>
 
       {/* Main counter */}
@@ -386,7 +519,7 @@ export default function WorkoutScreen() {
         style={[
           styles.counterContainer,
           { transform: [{ scale: pulseAnim }] },
-          isInSet && styles.counterActive,
+          isInSet && { borderColor: exercise.accentColor },
           isResting && styles.counterResting,
         ]}
       >
@@ -424,10 +557,10 @@ export default function WorkoutScreen() {
                 style={styles.counterButton}
                 onPress={handleIncrementPushups}
               >
-                <FontAwesome5 name="plus" size={24} color={Colors.dark.accent} />
+                <FontAwesome5 name="plus" size={24} color={exercise.accentColor} />
               </TouchableOpacity>
             </View>
-            <Text style={styles.timerText}>{formatTime(activeTime)}</Text>
+            <Text style={[styles.timerText, { color: exercise.accentColor }]}>{formatTime(activeTime)}</Text>
           </>
         ) : isResting ? (
           <>
@@ -443,7 +576,7 @@ export default function WorkoutScreen() {
       <View style={styles.actionButtons}>
         {!isInSet ? (
           <TouchableOpacity
-            style={[styles.actionButton, styles.startSetButton]}
+            style={[styles.actionButton, { backgroundColor: exercise.accentColor }]}
             onPress={handleStartSet}
             activeOpacity={0.8}
           >
@@ -469,7 +602,7 @@ export default function WorkoutScreen() {
           <Text style={styles.statLabel}>SETS</Text>
         </View>
         <View style={styles.statItem}>
-          <Text style={styles.statValue}>{totalPushups}</Text>
+          <Text style={styles.statValue}>{totalReps}</Text>
           <Text style={styles.statLabel}>TOTAL</Text>
         </View>
         <View style={styles.statItem}>
@@ -534,6 +667,62 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     padding: 20,
   },
+  restDayContainer: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  restDayIcon: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    backgroundColor: Colors.dark.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  restDayTitle: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: Colors.dark.text,
+    marginBottom: 12,
+  },
+  restDaySubtitle: {
+    fontSize: 16,
+    color: Colors.dark.textSecondary,
+    textAlign: 'center',
+    lineHeight: 24,
+    marginBottom: 24,
+  },
+  restDayInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 32,
+  },
+  restDayInfoText: {
+    fontSize: 14,
+    color: Colors.dark.textMuted,
+  },
+  restDayTips: {
+    width: '100%',
+    backgroundColor: Colors.dark.surface,
+    borderRadius: 16,
+    padding: 20,
+  },
+  tipsTitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.dark.textMuted,
+    letterSpacing: 1,
+    marginBottom: 12,
+  },
+  tipItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
   xpBarContainer: {
     width: '100%',
     marginBottom: 24,
@@ -541,20 +730,44 @@ const styles = StyleSheet.create({
   goalCard: {
     backgroundColor: Colors.dark.surface,
     borderRadius: 24,
-    padding: 32,
+    padding: 24,
     alignItems: 'center',
     marginBottom: 24,
     width: '100%',
-    maxWidth: 280,
+    maxWidth: 320,
+  },
+  goalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    width: '100%',
+    marginBottom: 16,
   },
   goalLabel: {
     fontSize: 12,
     color: Colors.dark.textMuted,
     letterSpacing: 2,
+  },
+  dayBadge: {
+    backgroundColor: Colors.dark.surfaceLight,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  dayBadgeText: {
+    fontSize: 12,
+    color: Colors.dark.textSecondary,
+    fontWeight: '600',
+  },
+  goalContent: {
+    alignItems: 'center',
+  },
+  exerciseIcon: {
+    fontSize: 32,
     marginBottom: 8,
   },
   goalNumber: {
-    fontSize: 80,
+    fontSize: 72,
     fontWeight: '800',
     color: Colors.dark.accent,
   },
@@ -562,6 +775,36 @@ const styles = StyleSheet.create({
     fontSize: 18,
     color: Colors.dark.textSecondary,
     letterSpacing: 1,
+  },
+  recommendedSets: {
+    width: '100%',
+    marginTop: 20,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: Colors.dark.border,
+  },
+  recommendedLabel: {
+    fontSize: 11,
+    color: Colors.dark.textMuted,
+    letterSpacing: 1,
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  setsPreview: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  setPreviewBadge: {
+    backgroundColor: Colors.dark.surfaceLight,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 12,
+  },
+  setPreviewText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: Colors.dark.text,
   },
   difficultyBadge: {
     flexDirection: 'row',
@@ -585,7 +828,6 @@ const styles = StyleSheet.create({
     width: 100,
     height: 100,
     borderRadius: 50,
-    backgroundColor: Colors.dark.accent,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 16,
@@ -602,11 +844,6 @@ const styles = StyleSheet.create({
     letterSpacing: 2,
   },
   tipsContainer: {
-    gap: 12,
-  },
-  tipItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
     gap: 12,
   },
   tipText: {
@@ -677,13 +914,26 @@ const styles = StyleSheet.create({
   },
   progressFill: {
     height: '100%',
-    backgroundColor: Colors.dark.accent,
     borderRadius: 4,
+  },
+  progressTextContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   progressText: {
     fontSize: 14,
     color: Colors.dark.textSecondary,
-    textAlign: 'right',
+  },
+  goalCompletedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  goalCompletedText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.dark.success,
   },
   counterContainer: {
     backgroundColor: Colors.dark.surface,
@@ -693,9 +943,6 @@ const styles = StyleSheet.create({
     marginBottom: 24,
     borderWidth: 2,
     borderColor: 'transparent',
-  },
-  counterActive: {
-    borderColor: Colors.dark.accent,
   },
   counterResting: {
     borderColor: Colors.dark.warning,
@@ -735,7 +982,6 @@ const styles = StyleSheet.create({
   },
   timerText: {
     fontSize: 24,
-    color: Colors.dark.accent,
     fontWeight: '600',
     marginTop: 16,
   },
@@ -764,9 +1010,6 @@ const styles = StyleSheet.create({
     paddingVertical: 18,
     borderRadius: 16,
     gap: 12,
-  },
-  startSetButton: {
-    backgroundColor: Colors.dark.accent,
   },
   endSetButton: {
     backgroundColor: Colors.dark.surfaceLight,

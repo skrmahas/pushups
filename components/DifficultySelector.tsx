@@ -1,12 +1,16 @@
 import Colors from '@/constants/Colors';
-import { DIFFICULTIES, Difficulty } from '@/lib/gamification';
-import React from 'react';
+import { Difficulty } from '@/lib/gamification';
+import { ExerciseType, EXERCISES, getDifficultyConfig, getUnlockedVariationsForDifficulty, ExerciseVariation } from '@/lib/exercises';
+import React, { useState } from 'react';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
+import ExerciseInfoModal from './ExerciseInfoModal';
 
 interface DifficultySelectorProps {
   selectedDifficulty: Difficulty;
   selectedVariation: string;
   userLevel: number;
+  exerciseType?: ExerciseType;
   onSelectDifficulty: (difficulty: Difficulty) => void;
   onSelectVariation: (variation: string) => void;
 }
@@ -15,23 +19,31 @@ export default function DifficultySelector({
   selectedDifficulty,
   selectedVariation,
   userLevel,
+  exerciseType = 'pushups',
   onSelectDifficulty,
   onSelectVariation,
 }: DifficultySelectorProps) {
-  const currentDifficultyConfig = DIFFICULTIES[selectedDifficulty];
-  const availableVariations = currentDifficultyConfig.variations.filter(
-    v => v.unlockLevel <= userLevel
-  );
+  const [infoModalVisible, setInfoModalVisible] = useState(false);
+  const [selectedInfoVariation, setSelectedInfoVariation] = useState<ExerciseVariation | null>(null);
+
+  const exercise = EXERCISES[exerciseType];
+  const currentDifficultyConfig = getDifficultyConfig(exerciseType, selectedDifficulty);
+  const availableVariations = getUnlockedVariationsForDifficulty(exerciseType, selectedDifficulty, userLevel);
   const lockedVariations = currentDifficultyConfig.variations.filter(
     v => v.unlockLevel > userLevel
   );
+
+  const handleShowInfo = (variation: ExerciseVariation) => {
+    setSelectedInfoVariation(variation);
+    setInfoModalVisible(true);
+  };
 
   return (
     <View style={styles.container}>
       {/* Difficulty Tabs */}
       <View style={styles.difficultyTabs}>
-        {(Object.keys(DIFFICULTIES) as Difficulty[]).map((diff) => {
-          const config = DIFFICULTIES[diff];
+        {(['easy', 'normal', 'hard', 'extreme'] as Difficulty[]).map((diff) => {
+          const config = getDifficultyConfig(exerciseType, diff);
           const isSelected = selectedDifficulty === diff;
           
           return (
@@ -41,7 +53,14 @@ export default function DifficultySelector({
                 styles.difficultyTab,
                 isSelected && { borderColor: config.color },
               ]}
-              onPress={() => onSelectDifficulty(diff)}
+              onPress={() => {
+                onSelectDifficulty(diff);
+                // Auto-select first available variation
+                const firstVar = getUnlockedVariationsForDifficulty(exerciseType, diff, userLevel)[0];
+                if (firstVar) {
+                  onSelectVariation(firstVar.id);
+                }
+              }}
               activeOpacity={0.7}
             >
               <Text
@@ -73,36 +92,58 @@ export default function DifficultySelector({
           const totalMultiplier = currentDifficultyConfig.multiplier * variation.xpMultiplier;
           
           return (
-            <TouchableOpacity
-              key={variation.id}
-              style={[
-                styles.variationCard,
-                isSelected && { borderColor: currentDifficultyConfig.color },
-              ]}
-              onPress={() => onSelectVariation(variation.id)}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.variationIcon}>{variation.icon}</Text>
-              <Text style={styles.variationName}>{variation.name}</Text>
-              <Text style={[styles.variationMultiplier, { color: currentDifficultyConfig.color }]}>
-                {totalMultiplier.toFixed(2)}x XP
-              </Text>
-              {isSelected && (
-                <View style={[styles.selectedIndicator, { backgroundColor: currentDifficultyConfig.color }]} />
-              )}
-            </TouchableOpacity>
+            <View key={variation.id} style={styles.variationWrapper}>
+              <TouchableOpacity
+                style={[
+                  styles.variationCard,
+                  isSelected && { borderColor: currentDifficultyConfig.color },
+                ]}
+                onPress={() => onSelectVariation(variation.id)}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.variationIcon}>{variation.icon}</Text>
+                <Text style={styles.variationName}>{variation.name}</Text>
+                <Text style={[styles.variationMultiplier, { color: currentDifficultyConfig.color }]}>
+                  {totalMultiplier.toFixed(2)}x XP
+                </Text>
+                {isSelected && (
+                  <View style={[styles.selectedIndicator, { backgroundColor: currentDifficultyConfig.color }]} />
+                )}
+              </TouchableOpacity>
+              
+              {/* Info button */}
+              <TouchableOpacity
+                style={styles.infoButton}
+                onPress={() => handleShowInfo(variation)}
+              >
+                <Ionicons name="information-circle-outline" size={20} color={Colors.dark.textMuted} />
+              </TouchableOpacity>
+            </View>
           );
         })}
         
         {/* Locked variations */}
         {lockedVariations.map((variation) => (
-          <View key={variation.id} style={[styles.variationCard, styles.lockedCard]}>
-            <Text style={styles.variationIcon}>🔒</Text>
-            <Text style={[styles.variationName, styles.lockedText]}>{variation.name}</Text>
-            <Text style={styles.unlockText}>Lvl {variation.unlockLevel}</Text>
+          <View key={variation.id} style={styles.variationWrapper}>
+            <View style={[styles.variationCard, styles.lockedCard]}>
+              <Text style={styles.variationIcon}>🔒</Text>
+              <Text style={[styles.variationName, styles.lockedText]}>{variation.name}</Text>
+              <Text style={styles.unlockText}>Lvl {variation.unlockLevel}</Text>
+            </View>
           </View>
         ))}
       </ScrollView>
+
+      {/* Exercise Info Modal */}
+      <ExerciseInfoModal
+        visible={infoModalVisible}
+        variation={selectedInfoVariation}
+        exerciseType={exerciseType}
+        onClose={() => {
+          setInfoModalVisible(false);
+          setSelectedInfoVariation(null);
+        }}
+      />
     </View>
   );
 }
@@ -153,6 +194,9 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingRight: 20,
   },
+  variationWrapper: {
+    position: 'relative',
+  },
   variationCard: {
     backgroundColor: Colors.dark.surface,
     borderRadius: 12,
@@ -197,5 +241,15 @@ const styles = StyleSheet.create({
     height: 3,
     borderRadius: 2,
   },
+  infoButton: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: Colors.dark.surfaceLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
 });
-
